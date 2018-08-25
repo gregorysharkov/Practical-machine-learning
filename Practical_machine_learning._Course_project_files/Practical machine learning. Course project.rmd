@@ -1,0 +1,177 @@
+---
+title: "Practical machine learning. Course project"
+author: "Grigory Sharkov"
+date: "25 août 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive summary  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+
+## Getting data  
+```{r eval=FALSE}
+library(dplyr)
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+fTrain <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fTest <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+dsTrain <- read.csv2("dsTrain.csv",
+                     header=TRUE, sep=",",na.strings = c("NA","",'#DIV/0!'),
+                     stringsAsFactors = T,dec = ".")
+dsTest <- read.csv2("dsTest.csv",
+                    header=TRUE, sep=",",na.strings = c("NA","",'#DIV/0!'),
+                    stringsAsFactors = T,dec = ".")
+```
+```{r, include=FALSE}
+library(dplyr)
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(ggplot2)
+dsTrain <- read.csv2("dsTrain.csv",
+                     header=TRUE, sep=",",na.strings = c("NA","",'#DIV/0!'),
+                     stringsAsFactors = T,dec = ".")
+colClasses <- sapply(dsTrain, class)
+dsTest <- read.csv2("dsTest.csv",
+                    header=TRUE, sep=",",na.strings = c("NA","",'#DIV/0!'),
+                    stringsAsFactors = T,dec = ".")
+```
+
+The dataset contains quite a number of missing values. Let's get rid of them in the training and the test sets. 
+
+```{r getting data}
+dsTrain <- dsTrain[,-7:-1]
+dsTest <- dsTest[,-7:-1]
+
+dsTrain <- dsTrain[,colSums(is.na(dsTrain)) <= 0.1 * nrow(dsTrain)]
+colNames <- colnames(dsTrain[,-length(dsTrain)])
+dim(dsTrain)
+
+dsTest <- dsTest[,colNames]
+str(dsTest)
+```
+
+## Preprocessing data  
+We will use center, scale and turn all values into principal components to reduse the noise in our predictions. In addition we will get rid of "near zero valuables" since they do not produce any valuable output for our models.
+```{r preprocessing, cache=TRUE}
+#Preprocessing
+preObj <- preProcess(dsTrain[,colNames],method = c("center","scale","pca"))
+preprocessedTrain <- predict(preObj,dsTrain[,-length(dsTrain)])
+preprocessedTrain$classe <- dsTrain$classe
+
+preprocessedTest <- predict(preObj,dsTest)
+
+#Near zero vars
+nzv <- nearZeroVar(preprocessedTrain,saveMetrics = T)
+preprocessedTrain <- preprocessedTrain[,nzv$nzv==F]
+
+nzv <- nearZeroVar(preprocessedTest,saveMetrics = T)
+preprocessedTest <- preprocessedTest[,nzv$nzv==F]
+dim(preprocessedTrain)
+str(preprocessedTrain)
+```  
+If we take for example the first two principal components, we can see that we may get be able to predict classes quite accurately (of course if we take all of them into account)
+
+```{r}
+ggplot(data=preprocessedTrain,aes(x=PC1,y=PC2, colour=classe)) + geom_point()
+```
+
+##Training  
+First let's create our training and testing sets out of dsTrain and prepare training controls.
+```{r}
+set.seed(1983)
+inTrain <- createDataPartition(preprocessedTrain$classe,p=.75,list = F)
+training <- preprocessedTrain[inTrain,]
+testing <- preprocessedTrain[-inTrain,]
+dim(training);dim(testing)
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10,
+                           verboseIter = TRUE)
+```
+
+We use several algorythms to train our model: random forest, rpar, gbm. Each of them with resampling or cross validation. It took me quite a wile to train them, so I include this code, but do not evaluate it during generation of this report. In addition I used parallel processing. Once the models are ready, I saved them to the disc for later use.
+```{r training, eval=FALSE}
+library(doParallel)
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+
+tfMod <- train(classe~.,data=training,method="rf",trControl=fitControl)
+rpartMod <- train(classe~.,data=training,method="rpart",trControl=fitControl)
+ptfModSingle <- train(classe~.,data=training,method="rf")
+gbmMod <- train(classe~.,data=training,method="gbm", verbose=F)
+
+stopCluster(cl)
+
+saveRDS(tfMod,"tfMod.rds")
+saveRDS(rpartMod,"rpartMod.rds")
+saveRDS(ptfModSingle,"ptfMod25.rds")
+saveRDS(gbmMod,"gbmMod.rds")
+```
+
+Once the models are built and saved, we can load them and do the predictions.
+```{r}
+tfMod <- readRDS("tfMod.rds")
+rpartMod <- readRDS("rpartMod.rds")
+ptfMod25 <- readRDS("ptfMod25.rds")
+gbmMod <- readRDS("gbmMod.rds")
+```
+
+## Making final predictions
+I chose a bootstrapped random forest model since it seems to have the highest accuracy (see Appendinx for the description of selection of models). SO the final predictions for the 20 selected activities are:
+```{r}
+predict(ptfMod25,newdata = preprocessedTest)
+```
+
+## Appendix. Evaluating quality of the models
+The random forest algotythms seem to have the best accuracy on our test dataset.
+
+### Random forest models
+I created 2 models :  
+1. tfMod : a random forest with cross validation (2 folds, repeated 5 times)  
+2. ptfMod25 : a bootstrapped (25 times) random forest
+
+```{r}
+tfMod
+ptfMod25
+```
+
+Let's check how the behave on the training set  
+```{r}
+confusionMatrix(training$classe,predict(tfMod,newdata = training))
+confusionMatrix(training$classe,predict(ptfMod25,newdata = training))
+```
+They are extremely accurate and both show very close results. Their high accuracy remains on the test set. It remains above 97%.
+```{r}
+confusionMatrix(testing$classe,predict(tfMod,newdata = testing))
+confusionMatrix(testing$classe,predict(ptfMod25,newdata = testing))
+```
+
+### Rpart model
+```{r}
+rpartMod
+confusionMatrix(training$classe,predict(rpartMod,newdata = training))
+confusionMatrix(testing$classe,predict(rpartMod,newdata = testing))
+```
+It is strange, but this model does not predict any class B or C activities, which explains its poor accuracy below 40%.  
+
+### gbm model
+```{r}
+gbmMod
+confusionMatrix(training$classe,predict(gbmMod,newdata = training))
+confusionMatrix(testing$classe,predict(gbmMod,newdata = testing))
+```
+This model has an accuracy which is lower than a random forest's one, but higher than an rpart.
+
+
